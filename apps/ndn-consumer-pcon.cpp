@@ -30,6 +30,16 @@ constexpr double ConsumerPcon::CUBIC_C;
 constexpr uint32_t ConsumerPcon::BIC_MAX_INCREMENT;
 constexpr uint32_t ConsumerPcon::BIC_LOW_WINDOW;
 
+namespace {
+  bool
+  CongestionDetected(const Data& data)
+  {
+    const auto mark = data.getCongestionMark();
+
+    return (mark & 0x00FF) != 0;
+  }
+}
+
 TypeId
 ConsumerPcon::GetTypeId()
 {
@@ -113,7 +123,7 @@ ConsumerPcon::OnData(shared_ptr<const Data> data)
     m_highData = sequenceNum;
   }
 
-  if (data->getCongestionMark() > 0) {
+  if (CongestionDetected(*data)) {
     if (m_reactToCongestionMarks) {
       NS_LOG_DEBUG("Received congestion mark: " << data->getCongestionMark());
       WindowDecrease();
