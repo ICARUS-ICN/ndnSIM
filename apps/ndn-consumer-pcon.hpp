@@ -30,7 +30,8 @@ namespace ndn {
 enum CcAlgorithm {
   AIMD,
   BIC,
-  CUBIC
+  CUBIC,
+  SBINOM,
 };
 
 /**
@@ -75,6 +76,12 @@ private:
   void
   BicDecrease();
 
+  void
+  SBinomIncrease(double aggressivenessHint);
+
+  void
+  SBinomDecrease(double aggressivenessHint);
+
 private:
   CcAlgorithm m_ccAlgorithm;
   double m_beta;
@@ -109,6 +116,11 @@ private:
   double m_bicSsCwnd;
   double m_bicSsTarget;
   bool m_isBicSs; //!< whether we are currently in the BIC slow start phase
+
+  // SBINOM variables:
+  uint32_t m_sbinomPkts;
+  double m_sbinomWSum;
+  double m_sbinomW0;
 };
 
 } // namespace ndn
