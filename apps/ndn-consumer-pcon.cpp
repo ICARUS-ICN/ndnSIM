@@ -38,6 +38,27 @@ namespace {
 
     return (mark & 0x00FF) != 0;
   }
+
+  double
+  ExtractAggressivness(const Data& data) {
+    const auto mark = data.getCongestionMark();
+    const auto congLevel = (mark & 0x00FF);
+    const auto toleranceLevel = ((mark & 0xFF00) >> 8);
+    double l;
+
+    if (CongestionDetected(data)) {
+      l = congLevel / 256.0;
+    } else {
+      l = toleranceLevel / 256.0;
+    }
+
+    NS_LOG_DEBUG("Aggressiveness: l: " << l
+                 << " k: " << 1.0 - l
+                 << " Congested: " << CongestionDetected(data)
+                 << " Mark: " << std::hex << mark);
+
+    return l;
+  }
 }
 
 TypeId
@@ -126,14 +147,14 @@ ConsumerPcon::OnData(shared_ptr<const Data> data)
   if (CongestionDetected(*data)) {
     if (m_reactToCongestionMarks) {
       NS_LOG_DEBUG("Received congestion mark: " << data->getCongestionMark());
-      WindowDecrease();
+      WindowDecrease(ExtractAggressivness(*data));
     }
     else {
       NS_LOG_DEBUG("Ignored received congestion mark: " << data->getCongestionMark());
     }
   }
   else {
-    WindowIncrease();
+    WindowIncrease(ExtractAggressivness(*data));
   }
 
   m_inFlight = m_seqTimeouts.size();
@@ -146,7 +167,7 @@ ConsumerPcon::OnData(shared_ptr<const Data> data)
 void
 ConsumerPcon::OnTimeout(uint32_t sequenceNum)
 {
-  WindowDecrease();
+  WindowDecrease(1); // Always use maximum aggressiveness for timeout events
 
   m_inFlight = m_seqTimeouts.size();
 
@@ -156,7 +177,7 @@ ConsumerPcon::OnTimeout(uint32_t sequenceNum)
 }
 
 void
-ConsumerPcon::WindowIncrease()
+ConsumerPcon::WindowIncrease(double aggressivnessHint)
 {
   if (m_ccAlgorithm == CcAlgorithm::AIMD) {
     if (m_window < m_ssthresh) {
@@ -179,7 +200,7 @@ ConsumerPcon::WindowIncrease()
 }
 
 void
-ConsumerPcon::WindowDecrease()
+ConsumerPcon::WindowDecrease(double aggressivnessHint)
 {
   if (!m_useCwa || m_highData > m_recPoint) {
     const double diff = m_seq - m_highData;

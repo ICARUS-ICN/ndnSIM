@@ -58,10 +58,10 @@ public:
 
 private:
   void
-  WindowIncrease();
+  WindowIncrease(double aggressivnessHint);
 
   void
-  WindowDecrease();
+  WindowDecrease(double aggressivnessHint);
 
   void
   CubicIncrease();
