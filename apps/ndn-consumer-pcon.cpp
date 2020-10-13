@@ -47,9 +47,9 @@ namespace {
     double l;
 
     if (CongestionDetected(data)) {
-      l = congLevel / 256.0;
+      l = congLevel / 255.0;
     } else {
-      l = toleranceLevel / 256.0;
+      l = toleranceLevel / 255.0;
     }
 
     NS_LOG_DEBUG("Aggressiveness: l: " << l
@@ -71,12 +71,13 @@ ConsumerPcon::GetTypeId()
       .AddConstructor<ConsumerPcon>()
 
       .AddAttribute("CcAlgorithm",
-                    "Specify which window adaptation algorithm to use (AIMD, BIC, CUBIC or SBINOM)",
+                    "Specify which window adaptation algorithm to use (AIMD, BIC, CUBIC, SBINOM or LBINOM)",
                     EnumValue(CcAlgorithm::AIMD),
                     MakeEnumAccessor(&ConsumerPcon::m_ccAlgorithm),
                     MakeEnumChecker(CcAlgorithm::AIMD, "AIMD", CcAlgorithm::BIC, "BIC",
                                     CcAlgorithm::CUBIC, "CUBIC",
-                                    CcAlgorithm::SBINOM, "SBINOM"))
+                                    CcAlgorithm::SBINOM, "SBINOM",
+                                    CcAlgorithm::LBINOM, "LBINOM"))
 
       .AddAttribute("Beta",
                     "TCP Multiplicative Decrease factor",
@@ -112,7 +113,12 @@ ConsumerPcon::GetTypeId()
                     "If true, use TCP CUBIC Fast Convergence",
                     BooleanValue(false),
                     MakeBooleanAccessor(&ConsumerPcon::m_useCubicFastConv),
-                    MakeBooleanChecker());
+                    MakeBooleanChecker())
+
+      .AddTraceSource("SmoothnessTrace", "Current BINOM k value",
+                      MakeTraceSourceAccessor(&ConsumerPcon::m_binomK),
+                      "ns3::ndn::ConsumerPcon::SmoothnessTraceCallback");
+
 
   return tid;
 }
@@ -133,6 +139,7 @@ ConsumerPcon::ConsumerPcon()
   , m_sbinomPkts(0)
   , m_sbinomWSum(0)
   , m_sbinomW0(1) // It will be wrong just once
+  , m_binomK(0) // Maximum aggressivess in the first round
 {
 }
 
@@ -163,7 +170,7 @@ ConsumerPcon::OnData(shared_ptr<const Data> data)
 
   m_inFlight = m_seqTimeouts.size();
 
-  NS_LOG_DEBUG("Window: " << m_window << ", InFlight: " << m_inFlight);
+  NS_LOG_DEBUG("Window: " << std::dec << m_window << ", InFlight: " << m_inFlight);
 
   ScheduleNextPacket();
 }
@@ -175,13 +182,13 @@ ConsumerPcon::OnTimeout(uint32_t sequenceNum)
 
   m_inFlight = m_seqTimeouts.size();
 
-  NS_LOG_DEBUG("Window: " << m_window << ", InFlight: " << m_inFlight);
+  NS_LOG_DEBUG("Window: " << std::dec << m_window << ", InFlight: " << m_inFlight);
 
   Consumer::OnTimeout(sequenceNum);
 }
 
 void
-ConsumerPcon::WindowIncrease(double aggressivnessHint)
+ConsumerPcon::WindowIncrease(double aggressivenessHint)
 {
   if (m_ccAlgorithm == CcAlgorithm::AIMD) {
     if (m_window < m_ssthresh) {
@@ -198,7 +205,10 @@ ConsumerPcon::WindowIncrease(double aggressivnessHint)
     BicIncrease();
   }
   else if (m_ccAlgorithm == CcAlgorithm::SBINOM) {
-    SBinomIncrease(aggressivnessHint);
+    SBinomIncrease(aggressivenessHint);
+  }
+  else if (m_ccAlgorithm == CcAlgorithm::LBINOM) {
+    LBinomIncrease();
   }
   else {
     BOOST_ASSERT_MSG(false, "Unknown CC Algorithm");
@@ -229,6 +239,9 @@ ConsumerPcon::WindowDecrease(double aggressivnessHint)
     else if (m_ccAlgorithm == CcAlgorithm::SBINOM) {
       SBinomDecrease(aggressivnessHint);
     }
+    else if (m_ccAlgorithm == CcAlgorithm::LBINOM) {
+      LBinomDecrease(aggressivnessHint);
+    }
     else {
       BOOST_ASSERT_MSG(false, "Unknown CC Algorithm");
     }
@@ -241,7 +254,7 @@ ConsumerPcon::WindowDecrease(double aggressivnessHint)
     NS_LOG_DEBUG("Window size decreased to " << m_window);
   }
   else {
-    NS_LOG_DEBUG("Window decrease suppressed, HighData: " << m_highData << ", RecPoint: " << m_recPoint);
+    NS_LOG_DEBUG("Window decrease suppressed, Seq: " << std::dec << m_seq << ", HighData: " << m_highData << ", RecPoint: " << m_recPoint);
   }
 }
 
@@ -382,19 +395,20 @@ ConsumerPcon::CubicDecrease()
 void
 ConsumerPcon::SBinomIncrease(double aggressivenessHint)
 {
-  const double l = aggressivenessHint,
-               k = 1.0 - l;
+  const double l = aggressivenessHint;
+
+  m_binomK = 1.0 - l;
 
   if (m_window < m_ssthresh) {
     m_window += 1.0;
   }
   else {
-    const auto round_increment = 1.0 * pow(m_window, -k);
+    const auto round_increment = 1.0 * pow(m_window, -m_binomK);
     m_window += round_increment / m_window;
 
     NS_LOG_DEBUG("Round increment: " << round_increment
-                                     << " k: " << k
-                                     << " divisor: " << pow(m_window, k)
+                                     << " k: " << m_binomK
+                                     << " divisor: " << pow(m_window, m_binomK)
                                      << " New window: " << m_window
                                      << " Packets: " << m_sbinomPkts + 1
                                      << " WindowSum: " << m_sbinomWSum
@@ -412,13 +426,13 @@ ConsumerPcon::SBinomDecrease(double aggressivenessHint)
   const double wAve = m_sbinomWSum / static_cast<double>(m_sbinomPkts);
   const auto nRounds = m_sbinomPkts / wAve;
 
-  const double k = std::max(0.0, -log((wIncrease)/nRounds) / log(wAve));
-  const double l = 1.0 - k;
+  m_binomK = std::max(0.0, -log((wIncrease)/nRounds) / log(wAve));
+  const double l = 1.0 - m_binomK;
 
   NS_LOG_DEBUG("Window " << m_window << " Initial window: " << m_sbinomW0
                          << " Ave window: " << wAve << " Packets: "
                          << m_sbinomPkts
-                         << " Rounds: " << nRounds << " k: " << k);
+                         << " Rounds: " << nRounds << " k: " << m_binomK);
 
   m_ssthresh = m_window * m_beta; // ssthresh is independent of aggressiveness
   m_window -= m_beta * pow(m_window, l);
@@ -426,6 +440,37 @@ ConsumerPcon::SBinomDecrease(double aggressivenessHint)
   m_sbinomPkts = 0;
   m_sbinomWSum = 0;
   m_sbinomW0 = m_window;
+}
+
+void
+ConsumerPcon::LBinomIncrease()
+{
+  if (m_window < m_ssthresh) {
+    m_window += 1.0;
+  }
+  else {
+    const auto round_increment = 1.0 * pow(m_window, -m_binomK);
+    m_window += round_increment / m_window;
+
+    NS_LOG_DEBUG("Round increment: " << round_increment
+                                     << " k: " << m_binomK
+                                     << " divisor: " << pow(m_window, m_binomK)
+                                     << " New window: " << m_window);
+  }
+}
+
+void
+ConsumerPcon::LBinomDecrease(double aggressivenessHint)
+{
+  const double l = aggressivenessHint;
+  m_binomK = 1.0 - l;
+
+  m_ssthresh = m_window * m_beta; // ssthresh is independent of aggressiveness
+  m_window -= m_beta * pow(m_window, l);
+
+
+  NS_LOG_DEBUG("Window decrease l: "<< l
+                                    << " New window: " << m_window);
 }
 
 } // namespace ndn

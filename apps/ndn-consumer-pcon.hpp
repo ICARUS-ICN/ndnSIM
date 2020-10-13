@@ -32,6 +32,7 @@ enum CcAlgorithm {
   BIC,
   CUBIC,
   SBINOM,
+  LBINOM,
 };
 
 /**
@@ -57,6 +58,8 @@ public:
   virtual void
   OnTimeout(uint32_t sequenceNum) override;
 
+  typedef std::function<void(double)> SmoothnessTraceCallback;
+
 private:
   void
   WindowIncrease(double aggressivnessHint);
@@ -81,6 +84,12 @@ private:
 
   void
   SBinomDecrease(double aggressivenessHint);
+
+  void
+  LBinomIncrease();
+
+  void
+  LBinomDecrease(double aggressivenessHint);
 
 private:
   CcAlgorithm m_ccAlgorithm;
@@ -121,6 +130,9 @@ private:
   uint32_t m_sbinomPkts;
   double m_sbinomWSum;
   double m_sbinomW0;
+
+  // *BINOM variables:
+  TracedValue<double> m_binomK;
 };
 
 } // namespace ndn
