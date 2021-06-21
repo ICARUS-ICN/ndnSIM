@@ -34,32 +34,31 @@ namespace {
   bool
   CongestionDetected(const Data& data)
   {
-    const auto mark = data.getCongestionMark();
+    const uint64_t mark = data.getCongestionMark();
 
-    return (mark & 0x00FF) != 0;
+    return (mark & 0x0001) != 0;
   }
 
-  double
-  ExtractAggressivness(const Data& data) {
-    const auto mark = data.getCongestionMark();
-    const auto congLevel = (mark & 0x00FF);
-    const auto toleranceLevel = ((mark & 0xFF00) >> 8);
-    double l;
+  uint32_t
+  GetRouterId(const Data& data)
+  {
+    const uint64_t mark = data.getCongestionMark();
 
-    if (CongestionDetected(data)) {
-      l = congLevel / 255.0;
-    } else {
-      l = toleranceLevel / 255.0;
+    if (mark & 0x800000) { // A rate
+      const uint8_t exp = mark & 0xFF;
+      const uint16_t characteristic = (mark & 0x7FFF00) >> 8;
+      const uint64_t rate = characteristic << exp;
+      std::cerr << "Router: " << (mark >> 32) << " Count: " << ((mark & 0xFF000000) >> 24)
+                << " Rate: " << 8 * rate / 1e6 << " Mb/s." << std::endl;
+    }
+    else {
+      std::cerr << "Router: " << (mark >> 32) << " Count: " << ((mark & 0xFF000000) >> 24)
+                << " Delay: " << (mark & 0x7FFFFF) / 1000000. << "s." << std::endl;
     }
 
-    NS_LOG_DEBUG("Aggressiveness: l: " << l
-                 << " k: " << 1.0 - l
-                 << " Congested: " << CongestionDetected(data)
-                 << " Mark: " << std::hex << mark);
-
-    return l;
+    return mark >> 32;
   }
-}
+  }
 
 TypeId
 ConsumerPcon::GetTypeId()
@@ -140,6 +139,9 @@ ConsumerPcon::ConsumerPcon()
   , m_sbinomWSum(0)
   , m_sbinomW0(1) // It will be wrong just once
   , m_binomK(0) // Maximum aggressivess in the first round
+  , m_bNeckId(0) // We forbid 0 as a valid Id
+  , m_congPhase(INIT)
+  , m_nextPhaseWindow(time::steady_clock::now())
 {
 }
 
@@ -158,14 +160,14 @@ ConsumerPcon::OnData(shared_ptr<const Data> data)
   if (CongestionDetected(*data)) {
     if (m_reactToCongestionMarks) {
       NS_LOG_DEBUG("Received congestion mark: " << data->getCongestionMark());
-      WindowDecrease(ExtractAggressivness(*data));
+      WindowDecrease(UpdateCurrentAggressiveness(*data));
     }
     else {
       NS_LOG_DEBUG("Ignored received congestion mark: " << data->getCongestionMark());
     }
   }
   else {
-    WindowIncrease(ExtractAggressivness(*data));
+    WindowIncrease(UpdateCurrentAggressiveness(*data));
   }
 
   m_inFlight = m_seqTimeouts.size();
@@ -422,17 +424,18 @@ ConsumerPcon::SBinomIncrease(double aggressivenessHint)
 void
 ConsumerPcon::SBinomDecrease(double aggressivenessHint)
 {
-  const double wIncrease = m_window - m_sbinomW0;
+  /*const double wIncrease = m_window - m_sbinomW0;
   const double wAve = m_sbinomWSum / static_cast<double>(m_sbinomPkts);
   const auto nRounds = m_sbinomPkts / wAve;
 
   m_binomK = std::max(0.0, -log((wIncrease)/nRounds) / log(wAve));
-  const double l = 1.0 - m_binomK;
+  const double l = 1.0 - m_binomK;*/
+  const double l = aggressivenessHint;
 
-  NS_LOG_DEBUG("Window " << m_window << " Initial window: " << m_sbinomW0
+/*  NS_LOG_DEBUG("Window " << m_window << " Initial window: " << m_sbinomW0
                          << " Ave window: " << wAve << " Packets: "
                          << m_sbinomPkts
-                         << " Rounds: " << nRounds << " k: " << m_binomK);
+                         << " Rounds: " << nRounds << " k: " << m_binomK);*/
 
   m_ssthresh = m_window * m_beta; // ssthresh is independent of aggressiveness
   m_window -= m_beta * pow(m_window, l);
@@ -471,6 +474,69 @@ ConsumerPcon::LBinomDecrease(double aggressivenessHint)
 
   NS_LOG_DEBUG("Window decrease l: "<< l
                                     << " New window: " << m_window);
+}
+
+double
+ConsumerPcon::getCurrentAggressiveness() const
+{
+  return 1.0 - m_binomK;
+}
+
+ConsumerPcon::congestionPhase
+ConsumerPcon::UpdateCurrentCongPhase(const Data& data)
+{
+  const uint64_t mark = data.getCongestionMark();
+
+  const bool empty_in_path = (mark & 0x0002) == 2;
+  const bool congestion_detected = CongestionDetected(data);
+  const auto router_id = GetRouterId(data);
+
+  if (m_bNeckId == 0) {
+    m_bNeckId = router_id;
+  }
+
+  /* Limit aggressiveness chantes to 10Hz to avoid being non-TCP friendly because to k+l!=1 over the whole window */
+  if (m_nextPhaseWindow >= time::steady_clock::now()) {
+    return m_congPhase;
+  }
+
+  bool phase_change = false;
+
+  if (congestion_detected) {
+    if (m_bNeckId != router_id) {
+      NS_LOG_DEBUG("CD ID: " << router_id << " migration");
+      m_congPhase = MIGRATION;
+      m_bNeckId = router_id;
+      m_binomK = 0.0;
+    }
+    else {
+      m_congPhase = SATURATION;
+      m_binomK = std::min(1.0, m_binomK.Get() + 0.1);
+      NS_LOG_DEBUG("CD ID: " << router_id << " saturation: " << m_binomK);
+    }
+
+    phase_change = true;
+  }
+
+  if (phase_change) {
+    m_nextPhaseWindow = time::steady_clock::now() + time::milliseconds(100);
+  }
+
+  NS_LOG_DEBUG("ID: " << router_id << " Empty: " << empty_in_path
+                      << " Congested: " << congestion_detected << " Mark: 0x" << std::hex << mark);
+
+  return m_congPhase;
+}
+
+double
+ConsumerPcon::UpdateCurrentAggressiveness(const Data& pkt)
+{
+  /* We return the previous aggressiveness. This way we ensure that when there is a loss
+   * we use the appropriate l value for decreasing, not always the smooth one */
+  const auto prev_aggressiveness = getCurrentAggressiveness();
+
+  UpdateCurrentCongPhase(pkt);
+  return prev_aggressiveness;
 }
 
 } // namespace ndn

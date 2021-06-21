@@ -4,7 +4,7 @@ BasedOnStyle: GNU
 ---
 Language: Cpp
 AlwaysBreakAfterDefinitionReturnType: true
-AlwaysBreakAfterDeclarationReturnType: true
+#AlwaysBreakAfterDeclarationReturnType: true
 ColumnLimit: 100
 SpaceBeforeParens: ControlStatements
 Cpp11BracedListStyle: true
@@ -28,6 +28,6 @@ SpacesBeforeTrailingComments: 1
 UseTab: Never
 ConstructorInitializerIndentWidth: 2
 
-SpaceBetweenTemplateAndOpeningAngle: false
+#SpaceBetweenTemplateAndOpeningAngle: false
 BreakBeforeBinaryOperators: NonAssignment
 ContinuationIndentWidth: 2

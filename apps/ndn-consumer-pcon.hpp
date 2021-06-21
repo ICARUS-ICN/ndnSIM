@@ -91,6 +91,12 @@ private:
   void
   LBinomDecrease(double aggressivenessHint);
 
+  double
+  getCurrentAggressiveness() const;
+
+  double 
+  UpdateCurrentAggressiveness(const Data& pkt);
+
 private:
   CcAlgorithm m_ccAlgorithm;
   double m_beta;
@@ -133,6 +139,12 @@ private:
 
   // *BINOM variables:
   TracedValue<double> m_binomK;
+  uint64_t m_bNeckId;
+  enum congestionPhase { INIT, MIGRATION, SATURATION} m_congPhase;
+  time::steady_clock::time_point m_nextPhaseWindow;
+
+  congestionPhase 
+  UpdateCurrentCongPhase(const Data& data);
 };
 
 } // namespace ndn
