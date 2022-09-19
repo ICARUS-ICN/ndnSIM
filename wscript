@@ -30,7 +30,7 @@ def configure(conf):
 
     conf.check_cxx(lib='pthread', uselib_store='PTHREAD', define_name='HAVE_PTHREAD', mandatory=False)
     conf.check_sqlite3(mandatory=True)
-    conf.check_openssl(mandatory=True, use='OPENSSL', atleast_version=0x10001000)
+    conf.check_openssl(mandatory=True, use='OPENSSL', atleast_version="1.0.2")
 
     if not conf.env['LIB_BOOST']:
         conf.report_optional_feature("ndnSIM", "ndnSIM", False,
